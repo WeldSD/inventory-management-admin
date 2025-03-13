@@ -9,34 +9,68 @@ export default function Home() {
   const [checkedOutItems, setCheckedOutItems] = useState([]);
   const [overdueItems, setOverdueItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [currentDateTime, setCurrentDateTime] = useState(new Date());
   
   // Current time for comparisons
-  const currentTime = new Date().toISOString();
+  const currentTime = new Date();
+  // Set threshold for overdue items (24 hours)
+  const overdueThreshold = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+
+  // Update the clock every second
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentDateTime(new Date());
+    }, 1000);
+    
+    return () => clearInterval(timer);
+  }, []);
 
   // Helper to format dates
-  const formatDateTime = (dateTimeString) => {
-    const date = new Date(dateTimeString);
-    return date.toLocaleString();
+  const formatDateTime = (timestamp) => {
+    // Check if timestamp is a Firestore Timestamp
+    if (timestamp && typeof timestamp.toDate === 'function') {
+      return timestamp.toDate().toLocaleString();
+    } 
+    // Handle string timestamps
+    else if (timestamp) {
+      return new Date(timestamp).toLocaleString();
+    }
+    return 'No date available';
   };
 
   // Fetch data from Firestore
   useEffect(() => {
     setLoading(true);
     
-    // Create a real-time listener for checked out items
+    // Create a real-time listener for inventory items
     const q = query(collection(db, "inventory"));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const items = [];
       querySnapshot.forEach((doc) => {
-        items.push({ id: doc.id, ...doc.data() });
+        items.push({ 
+          id: doc.id, 
+          ...doc.data() 
+        });
       });
       
       setCheckedOutItems(items);
       
-      // Filter for overdue items
-      const overdue = items.filter(item => item.dueTime < currentTime);
-      setOverdueItems(overdue);
+      // Items are considered overdue if they were checked out more than 24 hours ago
+      const overdue = items.filter(item => {
+        if (!item.timestamp) return false;
+        
+        let checkoutTime;
+        if (typeof item.timestamp.toDate === 'function') {
+          checkoutTime = item.timestamp.toDate();
+        } else {
+          checkoutTime = new Date(item.timestamp);
+        }
+        
+        const timeDiff = currentTime - checkoutTime;
+        return timeDiff > overdueThreshold;
+      });
       
+      setOverdueItems(overdue);
       setLoading(false);
     }, (error) => {
       console.error("Error fetching inventory items:", error);
@@ -51,17 +85,28 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <header className="bg-white dark:bg-gray-800 shadow">
         <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Calgary Zoo Inventory Management
-          </h1>
-          <div className="flex items-center">
-            <Image
-              src="/vercel.svg"
+         
+        <Image
+              src="calgary-zoo-vector-logo.svg" 
               alt="Calgary Zoo"
-              width={32}
-              height={32}
-              className="mr-2 dark:invert"
+              width={100} 
+              height={100}
+              className="mr-2"
             />
+          <div className="flex items-center">
+            <div className="mr-6 text-right">
+              <p className="text-sm font-medium text-gray-900 dark:text-white">
+                {currentDateTime.toLocaleDateString('en-US', { 
+                  weekday: 'long', 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                })}
+              </p>
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                {currentDateTime.toLocaleTimeString('en-US')}
+              </p>
+            </div>
             <span className="text-sm text-gray-600 dark:text-gray-300">Admin Panel</span>
           </div>
         </div>
@@ -120,13 +165,10 @@ export default function Home() {
                               Checked Out By
                             </th>
                             <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                              Department
+                              Category
                             </th>
                             <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Checked Out Time
-                            </th>
-                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                              Due Time
                             </th>
                             <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Status
@@ -134,36 +176,46 @@ export default function Home() {
                           </tr>
                         </thead>
                         <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-                          {(activeTab === 'checked-out' ? checkedOutItems : overdueItems).map((item) => (
-                            <tr key={item.id}>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
-                                {item.name}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                {item.checkedOutBy}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                {item.department}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                {formatDateTime(item.timestamp)}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                {formatDateTime(item.dueTime)}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                {item.dueTime < currentTime ? (
-                                  <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
-                                    Overdue
-                                  </span>
-                                ) : (
-                                  <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
-                                    Active
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
+                          {(activeTab === 'checked-out' ? checkedOutItems : overdueItems).map((item) => {
+                            // Calculate if item is overdue
+                            let checkoutTime;
+                            if (item.timestamp && typeof item.timestamp.toDate === 'function') {
+                              checkoutTime = item.timestamp.toDate();
+                            } else if (item.timestamp) {
+                              checkoutTime = new Date(item.timestamp);
+                            }
+                            
+                            const timeDiff = checkoutTime ? (currentTime - checkoutTime) : 0;
+                            const isOverdue = timeDiff > overdueThreshold;
+                            
+                            return (
+                              <tr key={item.id}>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                                  {item.name}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                  {item.lastCheckedOutBy || 'Unknown'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                  {item.category || 'Uncategorized'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                  {formatDateTime(item.timestamp)}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap">
+                                  {isOverdue ? (
+                                    <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                                      Overdue
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                                      Active
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
