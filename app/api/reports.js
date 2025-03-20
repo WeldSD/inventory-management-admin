@@ -1,11 +1,11 @@
 import admin from "firebase-admin";
-import { VercelRequest, VercelResponse } from "@vercel/node";
 
+// Ensure Firebase Admin SDK is initialized only once
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId: "scanimals-725e9",
-      clientEmail: "kathiriyajay04@gmail.com",
+      clientEmail: "firebase-adminsdk-fbsvc@scanimals-725e9.iam.gserviceaccount.com",
       privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
     }),
   });
@@ -13,17 +13,18 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-export default async function handler(req, res) {
+export async function GET(req) {
   try {
     const snapshot = await db.collection("inventory").get();
     const items = snapshot.docs.map((doc) => ({
       id: doc.id,
       name: doc.data().name,
-      checkedOut: doc.data().checkedOut,
+      checkedOut: doc.data().checkedOut || false, // Default false if missing
     }));
 
-    res.status(200).json({ data: items });
+    return Response.json({ data: items }, { status: 200 });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("Error fetching inventory:", error);
+    return Response.json({ error: "Failed to fetch inventory" }, { status: 500 });
   }
 }
