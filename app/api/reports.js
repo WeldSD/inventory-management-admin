@@ -15,7 +15,7 @@ const db = admin.firestore();
 
 export async function GET(req) {
   try {
-    const snapshot = await db.collection("inventory").get();
+    const snapshot = await db.collection("demoreport").get();
     const items = snapshot.docs.map((doc) => ({
       id: doc.id,
       name: doc.data().name,

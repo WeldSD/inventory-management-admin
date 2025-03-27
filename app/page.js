@@ -6,6 +6,7 @@ import { collection, query, getDocs, onSnapshot } from 'firebase/firestore';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState('checked-out');
+  const [currentTime, setCurrentTime] = useState(new Date());
   const [checkedOutItems, setCheckedOutItems] = useState([]);
   const [overdueItems, setOverdueItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -15,8 +16,6 @@ export default function Home() {
   const [emailSent, setEmailSent] = useState(false);
   const emailRef = useRef(null);
   
-  // Current time for comparisons
-  const currentTime = new Date();
   
   // Helper function to get the 5:00 PM MST cutoff time for a given date
   const getCutoffTime = (date) => {
@@ -28,13 +27,14 @@ export default function Home() {
   };
 
   // Update the clock every second
+  // Fixed: Added currentTime to dependencies
   useEffect(() => {
     const timer = setInterval(() => {
-      setCurrentDateTime(new Date());
+      setCurrentTime(new Date());
     }, 1000);
     
     return () => clearInterval(timer);
-  }, []);
+  }, [currentTime]);
 
   // Helper to format dates
   const formatDateTime = (timestamp) => {
@@ -54,7 +54,7 @@ export default function Home() {
     setLoading(true);
     
     // Create a real-time listener for inventory items
-    const q = query(collection(db, "inventory"));
+    const q = query(collection(db, "demoreport"));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const items = [];
       querySnapshot.forEach((doc) => {
