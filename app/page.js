@@ -16,33 +16,28 @@ export default function Home() {
   const [emailSent, setEmailSent] = useState(false);
   const emailRef = useRef(null);
   
-  
   // Helper function to get the 5:00 PM MST cutoff time for a given date
   const getCutoffTime = (date) => {
     const cutoff = new Date(date);
-    // Set to 5:00 PM MST (17:00)
-    // Note: you may need to adjust this if you need to handle timezone conversion explicitly
-    cutoff.setHours(17, 0, 0, 0);
+    cutoff.setHours(17, 0, 0, 0); // 5:00 PM MST
     return cutoff;
   };
 
   // Update the clock every second
-  // Fixed: Added currentTime to dependencies
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
+      setCurrentDateTime(new Date());
     }, 1000);
     
     return () => clearInterval(timer);
-  }, [currentTime]);
+  }, []);
 
   // Helper to format dates
   const formatDateTime = (timestamp) => {
-    // Check if timestamp is a Firestore Timestamp
     if (timestamp && typeof timestamp.toDate === 'function') {
       return timestamp.toDate().toLocaleString();
     } 
-    // Handle string timestamps
     else if (timestamp) {
       return new Date(timestamp).toLocaleString();
     }
@@ -53,57 +48,53 @@ export default function Home() {
   useEffect(() => {
     setLoading(true);
     
-    // Create a real-time listener for inventory items
-    const q = query(collection(db, "demoreport"));
+    const q = query(collection(db, "CheckedOutItems"));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const items = [];
       querySnapshot.forEach((doc) => {
+        let data = doc.data();
+
+        let checkOutTime;
+        if (data.checkOutTime) {
+          if (typeof data.checkOutTime.toDate === 'function') {
+            checkOutTime = data.checkOutTime.toDate();
+          } else {
+            checkOutTime = new Date(data.checkOutTime);
+          }
+        } else {
+          checkOutTime = null;
+        }
+
         items.push({ 
           id: doc.id, 
-          ...doc.data() 
+          name: data.name || "Unknown", 
+          usersName: data.usersName || "Unknown", 
+          timestamp: checkOutTime || "No date available" 
         });
       });
-      
+
       setCheckedOutItems(items);
-      
-      // Get today's cutoff time (5:00 PM MST)
-      const todayCutoff = getCutoffTime(currentTime);
-      
-      // Get the start of today for checking previous days
-      const todayStart = new Date(currentTime);
+
+      // Calculate overdue items
+      const todayCutoff = getCutoffTime(new Date());
+      const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
-      
-      // Items are considered overdue if:
-      // 1. Current time is past 5:00 PM MST and they were checked out before today's 5:00 PM
-      // OR
-      // 2. They were checked out on a previous day
+
       const overdue = items.filter(item => {
-        if (!item.timestamp) return false;
-        
-        let checkoutTime;
-        if (typeof item.timestamp.toDate === 'function') {
-          checkoutTime = item.timestamp.toDate();
-        } else {
-          checkoutTime = new Date(item.timestamp);
-        }
-        
-        // Check if the item was checked out on a previous day
+        if (!item.timestamp || item.timestamp === "No date available") return false;
+        const checkoutTime = new Date(item.timestamp);
         const isPreviousDayCheckout = checkoutTime < todayStart;
-        
-        // Check if current time is past today's cutoff and item was checked out before cutoff
-        const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-        
+        const isPastCutoffToday = new Date() > todayCutoff && checkoutTime < todayCutoff;
         return isPreviousDayCheckout || isPastCutoffToday;
       });
-      
+
       setOverdueItems(overdue);
       setLoading(false);
     }, (error) => {
       console.error("Error fetching inventory items:", error);
       setLoading(false);
     });
-    
-    // Clean up the listener when component unmounts
+
     return () => unsubscribe();
   }, []);
 
@@ -114,7 +105,6 @@ export default function Home() {
     const now = new Date();
     let startDate;
 
-    // Determine start date based on report period
     switch(reportPeriod) {
       case 'daily':
         startDate = new Date(now);
@@ -133,40 +123,30 @@ export default function Home() {
         startDate.setHours(0, 0, 0, 0);
     }
 
-    // Filter items for the selected period
     const periodItems = checkedOutItems.filter(item => {
       if (!item.timestamp) return false;
-      
       let checkoutTime;
       if (typeof item.timestamp.toDate === 'function') {
         checkoutTime = item.timestamp.toDate();
       } else {
         checkoutTime = new Date(item.timestamp);
       }
-      
       return checkoutTime >= startDate;
     });
 
-    // Count overdue items in the selected period
     const overdueInPeriod = periodItems.filter(item => {
       if (!item.timestamp) return false;
-      
       let checkoutTime;
       if (typeof item.timestamp.toDate === 'function') {
         checkoutTime = item.timestamp.toDate();
       } else {
         checkoutTime = new Date(item.timestamp);
       }
-      
-      // Check if the item was checked out on a previous day
       const todayStart = new Date(currentTime);
       todayStart.setHours(0, 0, 0, 0);
       const isPreviousDayCheckout = checkoutTime < todayStart;
-      
-      // Check if current time is past today's cutoff and item was checked out before cutoff
       const todayCutoff = getCutoffTime(currentTime);
       const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-      
       return isPreviousDayCheckout || isPastCutoffToday;
     });
 
@@ -177,30 +157,21 @@ export default function Home() {
     };
   };
 
-  // Handle sending report via email
   const handleSendEmail = (e) => {
     e.preventDefault();
     const email = emailRef.current.value;
     if (!email) return;
     
     setSendingEmail(true);
-    
-    // Here you would integrate with your email service provider
-    // For example using SendGrid, EmailJS, or even a custom API endpoint
-    
-    // Sample implementation (replace with actual implementation)
     setTimeout(() => {
       setSendingEmail(false);
       setEmailSent(true);
-      
-      // Reset email sent notification after 5 seconds
       setTimeout(() => {
         setEmailSent(false);
       }, 5000);
     }, 1500);
   };
 
-  // Format report title
   const getReportTitle = () => {
     switch(reportPeriod) {
       case 'daily': return 'Today\'s Report';
@@ -214,14 +185,13 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <header className="bg-white dark:bg-gray-800 shadow">
         <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 flex justify-between items-center">
-         
-        <Image
-              src="calgary-zoo-vector-logo.svg" 
-              alt="Calgary Zoo"
-              width={100} 
-              height={100}
-              className="mr-2"
-            />
+          <Image
+            src="calgary-zoo-vector-logo.svg" 
+            alt="Calgary Zoo"
+            width={100} 
+            height={100}
+            className="mr-2"
+          />
           <div className="flex items-center">
             <div className="mr-6 text-right">
               <p className="text-sm font-medium text-gray-900 dark:text-white">
@@ -242,7 +212,6 @@ export default function Home() {
       </header>
 
       <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        {/* Loading state */}
         {loading && (
           <div className="flex justify-center py-6">
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
@@ -251,7 +220,6 @@ export default function Home() {
 
         {!loading && (
           <>
-            {/* Tabs */}
             <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
               <nav className="-mb-px flex space-x-8" aria-label="Tabs">
                 <button
@@ -287,7 +255,7 @@ export default function Home() {
               </nav>
             </div>
 
-            {/* Item Table for Checked Out and Overdue Items */}
+            {/* Item Tables */}
             {((activeTab === 'checked-out' && checkedOutItems.length > 0) || 
               (activeTab === 'overdue' && overdueItems.length > 0)) && (
               <div className="flex flex-col">
@@ -313,14 +281,10 @@ export default function Home() {
                         </thead>
                         <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                           {(activeTab === 'checked-out' ? checkedOutItems : overdueItems).map((item) => {
-                            // Get today's cutoff time (5:00 PM MST)
                             const todayCutoff = getCutoffTime(currentTime);
-
-                            // Get the start of today for checking previous days
                             const todayStart = new Date(currentTime);
                             todayStart.setHours(0, 0, 0, 0);
 
-                            // Determine if item is overdue using the same logic as in useEffect
                             let checkoutTime;
                             if (item.timestamp && typeof item.timestamp.toDate === 'function') {
                               checkoutTime = item.timestamp.toDate();
@@ -328,13 +292,8 @@ export default function Home() {
                               checkoutTime = new Date(item.timestamp);
                             }
 
-                            // Check if the item was checked out on a previous day
                             const isPreviousDayCheckout = checkoutTime < todayStart;
-
-                            // Check if current time is past today's cutoff and item was checked out before cutoff
                             const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-
-                            // Item is overdue if either condition is true
                             const isOverdue = isPreviousDayCheckout || isPastCutoffToday;
                             
                             return (
@@ -343,7 +302,7 @@ export default function Home() {
                                   {item.name}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                  {item.lastCheckedOutBy || 'Unknown'}
+                                  {item.lastCheckedOutBy}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                                   {formatDateTime(item.timestamp)}
@@ -373,7 +332,6 @@ export default function Home() {
             {/* Reports View */}
             {activeTab === 'reports' && (
               <div className="flex flex-col">
-                {/* Report Period Selection */}
                 <div className="mb-6">
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     Report Period:
@@ -412,7 +370,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Report Data */}
                 <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mb-6">
                   <h2 className="text-lg font-medium text-gray-900 dark:text-white mb-4">{getReportTitle()}</h2>
                   
@@ -433,7 +390,6 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Email Report Form */}
                   <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
                     <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-4">Send Report via Email</h3>
                     <form onSubmit={handleSendEmail} className="flex flex-col sm:flex-row gap-3">
@@ -460,7 +416,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Detailed Items Table */}
                 {getReportData().items.length > 0 && (
                   <div className="-my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
                     <div className="py-2 align-middle inline-block min-w-full sm:px-6 lg:px-8">
@@ -484,7 +439,6 @@ export default function Home() {
                           </thead>
                           <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                             {getReportData().items.map((item) => {
-                              // Determine if item is overdue using the same logic as before
                               let checkoutTime;
                               if (item.timestamp && typeof item.timestamp.toDate === 'function') {
                                 checkoutTime = item.timestamp.toDate();
@@ -507,7 +461,7 @@ export default function Home() {
                                     {item.name}
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                    {item.lastCheckedOutBy || 'Unknown'}
+                                    {item.lastCheckedOutBy}
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                                     {formatDateTime(item.timestamp)}
@@ -535,7 +489,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Empty state for no items */}
             {(activeTab === 'checked-out' && checkedOutItems.length === 0) || 
              (activeTab === 'overdue' && overdueItems.length === 0) ? (
               <div className="text-center py-12">
