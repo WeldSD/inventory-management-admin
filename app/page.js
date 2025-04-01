@@ -2,7 +2,8 @@
 import { useState, useEffect, useRef } from 'react';
 import Image from "next/image";
 import { db } from '../firebase';
-import { collection, query, getDocs, onSnapshot } from 'firebase/firestore';
+import { collection, query, onSnapshot } from 'firebase/firestore';
+import emailjs from '@emailjs/browser';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState('checked-out');
@@ -14,14 +15,15 @@ export default function Home() {
   const [reportPeriod, setReportPeriod] = useState('daily');
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
+  const [emailError, setEmailError] = useState(null);
   const emailRef = useRef(null);
-  
-  // Helper function to get the 5:00 PM MST cutoff time for a given date
-  const getCutoffTime = (date) => {
-    const cutoff = new Date(date);
-    cutoff.setHours(17, 0, 0, 0); // 5:00 PM MST
-    return cutoff;
-  };
+
+  // Initialize EmailJS
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_EMAILJS_PUBLIC_KEY) {
+      emailjs.init(process.env.NEXT_PUBLIC_EMAILJS_PUBLIC_KEY);
+    }
+  }, []);
 
   // Update the clock every second
   useEffect(() => {
@@ -76,7 +78,8 @@ export default function Home() {
       setCheckedOutItems(items);
 
       // Calculate overdue items
-      const todayCutoff = getCutoffTime(new Date());
+      const todayCutoff = new Date();
+      todayCutoff.setHours(17, 0, 0, 0); // 5:00 PM cutoff
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
@@ -91,7 +94,6 @@ export default function Home() {
       setOverdueItems(overdue);
       setLoading(false);
     }, (error) => {
-      console.error("Error fetching inventory items:", error);
       setLoading(false);
     });
 
@@ -145,7 +147,8 @@ export default function Home() {
       const todayStart = new Date(currentTime);
       todayStart.setHours(0, 0, 0, 0);
       const isPreviousDayCheckout = checkoutTime < todayStart;
-      const todayCutoff = getCutoffTime(currentTime);
+      const todayCutoff = new Date(todayStart);
+      todayCutoff.setHours(17, 0, 0, 0);
       const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
       return isPreviousDayCheckout || isPastCutoffToday;
     });
@@ -157,19 +160,130 @@ export default function Home() {
     };
   };
 
-  const handleSendEmail = (e) => {
-    e.preventDefault();
-    const email = emailRef.current.value;
+  // Helper function to check if an item is overdue
+  const isItemOverdue = (item) => {
+    if (!item.timestamp) return false;
+    
+    const todayCutoff = new Date();
+    todayCutoff.setHours(17, 0, 0, 0);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    let checkoutTime;
+    if (typeof item.timestamp.toDate === 'function') {
+      checkoutTime = item.timestamp.toDate();
+    } else {
+      checkoutTime = new Date(item.timestamp);
+    }
+
+    const isPreviousDayCheckout = checkoutTime < todayStart;
+    const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
+    return isPreviousDayCheckout || isPastCutoffToday;
+  };
+
+  // Send weekly overdue report
+  const sendOverdueReport = async (email) => {
     if (!email) return;
     
     setSendingEmail(true);
-    setTimeout(() => {
-      setSendingEmail(false);
+    setEmailError(null);
+    
+    try {
+      // Calculate the date 7 days ago
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      
+      // Filter items that are overdue AND were checked out in the past week
+      const weeklyOverdueItems = overdueItems.filter(item => {
+        if (!item.timestamp) return false;
+        let checkoutTime;
+        if (typeof item.timestamp.toDate === 'function') {
+          checkoutTime = item.timestamp.toDate();
+        } else {
+          checkoutTime = new Date(item.timestamp);
+        }
+        return checkoutTime >= oneWeekAgo;
+      });
+
+      const templateParams = {
+        to_email: email,
+        report_title: 'Weekly Overdue Items Report',
+        date: new Date().toLocaleDateString(),
+        count: weeklyOverdueItems.length,
+        items: weeklyOverdueItems.map(item => ({
+          name: item.name || "Unknown item",
+          user: item.usersName || "Unknown user",
+          time: formatDateTime(item.timestamp)
+        }))
+      };
+
+      await emailjs.send(
+        process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
+        process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
+        templateParams
+      );
       setEmailSent(true);
-      setTimeout(() => {
-        setEmailSent(false);
-      }, 5000);
-    }, 1500);
+    } catch (error) {
+      console.error('EmailJS Error:', error);
+      setEmailError('Failed to send email. Please try again.');
+    } finally {
+      setSendingEmail(false);
+      setTimeout(() => setEmailSent(false), 3000);
+    }
+  };
+
+  const handleSendEmail = async (e) => {
+    e.preventDefault();
+    const email = emailRef.current.value;
+    if (!email) return;
+
+    if (activeTab === 'overdue') {
+      await sendOverdueReport(email);
+    } else {
+      // Full report for other tabs
+      setSendingEmail(true);
+      setEmailError(null);
+      
+      try {
+        const reportData = getReportData();
+        const reportTitle = getReportTitle();
+        
+        const templateParams = {
+          to_email: email,
+          report_title: reportTitle,
+          date: new Date().toLocaleDateString(),
+          total_items: reportData.total || 0,
+          overdue_items: reportData.overdue || 0,
+          overdue_rate: `${reportData.total ? Math.round((reportData.overdue / reportData.total) * 100) : 0}%`,
+          
+          // PRE-GENERATE THE ITEMS TABLE HTML
+          items_html: reportData.items.map(item => `
+            <tr>
+              <td>${item.name || "Unknown"}</td>
+              <td>${item.user || "Unknown"}</td>
+              <td>${formatDateTime(item.timestamp) || "N/A"}</td>
+              <td style="${isItemOverdue(item) ? 'color: red; font-weight: bold;' : 'color: green;'}">
+                ${isItemOverdue(item) ? "⚠️ Overdue" : "✓ Active"}
+              </td>
+            </tr>
+          `).join('') // Combine all rows into a single string
+        };
+        
+        await emailjs.send(
+          process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
+          process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
+          templateParams
+        );
+        
+        setEmailSent(true);
+      } catch (error) {
+        console.error('EmailJS Error:', error);
+        setEmailError('Failed to send email. Please try again.');
+      } finally {
+        setSendingEmail(false);
+        setTimeout(() => setEmailSent(false), 3000);
+      }
+    }
   };
 
   const getReportTitle = () => {
@@ -255,7 +369,6 @@ export default function Home() {
               </nav>
             </div>
 
-            {/* Item Tables */}
             {((activeTab === 'checked-out' && checkedOutItems.length > 0) || 
               (activeTab === 'overdue' && overdueItems.length > 0)) && (
               <div className="flex flex-col">
@@ -281,8 +394,9 @@ export default function Home() {
                         </thead>
                         <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                           {(activeTab === 'checked-out' ? checkedOutItems : overdueItems).map((item) => {
-                            const todayCutoff = getCutoffTime(currentTime);
-                            const todayStart = new Date(currentTime);
+                            const todayCutoff = new Date();
+                            todayCutoff.setHours(17, 0, 0, 0);
+                            const todayStart = new Date();
                             todayStart.setHours(0, 0, 0, 0);
 
                             let checkoutTime;
@@ -329,7 +443,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Reports View */}
             {activeTab === 'reports' && (
               <div className="flex flex-col">
                 <div className="mb-6">
@@ -383,7 +496,7 @@ export default function Home() {
                       <p className="text-2xl font-semibold text-red-600 dark:text-red-400">{getReportData().overdue}</p>
                     </div>
                     <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
-                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Checked Out Rate</h3>
+                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Overdue Rate</h3>
                       <p className="text-2xl font-semibold text-gray-900 dark:text-white">
                         {getReportData().total ? Math.round((getReportData().overdue / getReportData().total) * 100) : 0}%
                       </p>
@@ -413,6 +526,9 @@ export default function Home() {
                         {emailSent ? 'Email Sent!' : sendingEmail ? 'Sending...' : 'Send Report'}
                       </button>
                     </form>
+                    {emailError && (
+                      <div className="text-red-500 text-sm mt-2">{emailError}</div>
+                    )}
                   </div>
                 </div>
 
@@ -450,7 +566,8 @@ export default function Home() {
                               todayStart.setHours(0, 0, 0, 0);
                               const isPreviousDayCheckout = checkoutTime < todayStart;
                               
-                              const todayCutoff = getCutoffTime(currentTime);
+                              const todayCutoff = new Date(todayStart);
+                              todayCutoff.setHours(17, 0, 0, 0);
                               const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
 
                               const isOverdue = isPreviousDayCheckout || isPastCutoffToday;
@@ -461,7 +578,7 @@ export default function Home() {
                                     {item.name}
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                    {item.lastCheckedOutBy}
+                                    {item.usersName}
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                                     {formatDateTime(item.timestamp)}
