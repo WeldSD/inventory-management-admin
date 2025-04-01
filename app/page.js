@@ -35,16 +35,37 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []);
 
+  // Helper to convert Firestore timestamp to Date
+  const toDate = (timestamp) => {
+    if (!timestamp) return null;
+    if (typeof timestamp.toDate === 'function') {
+      return timestamp.toDate();
+    }
+    return new Date(timestamp);
+  };
+
   // Helper to format dates
   const formatDateTime = (timestamp) => {
-    if (timestamp && typeof timestamp.toDate === 'function') {
-      return timestamp.toDate().toLocaleString();
-    } 
-    else if (timestamp) {
-      return new Date(timestamp).toLocaleString();
-    }
-    return 'No date available';
+    const date = toDate(timestamp);
+    return date ? date.toLocaleString() : 'No date available';
   };
+
+  // Check if item is overdue
+  const isItemOverdue = (item) => {
+    const checkoutTime = toDate(item.timestamp);
+    if (!checkoutTime) return false;  // If no valid time, it's not overdue
+  
+    const todayCutoff = new Date();
+    todayCutoff.setHours(17, 0, 0, 0); // 5:00 PM cutoff
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+  
+    const isPreviousDayCheckout = checkoutTime < todayStart;
+    const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
+    
+    return isPreviousDayCheckout || isPastCutoffToday;
+  };
+  
 
   // Fetch data from Firestore
   useEffect(() => {
@@ -52,48 +73,22 @@ export default function Home() {
     
     const q = query(collection(db, "CheckedOutItems"));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const items = [];
-      querySnapshot.forEach((doc) => {
-        let data = doc.data();
-
-        let checkOutTime;
-        if (data.checkOutTime) {
-          if (typeof data.checkOutTime.toDate === 'function') {
-            checkOutTime = data.checkOutTime.toDate();
-          } else {
-            checkOutTime = new Date(data.checkOutTime);
-          }
-        } else {
-          checkOutTime = null;
-        }
-
-        items.push({ 
+      const items = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return { 
           id: doc.id, 
           name: data.name || "Unknown", 
           usersName: data.usersName || "Unknown", 
-          timestamp: checkOutTime || "No date available" 
-        });
+          timestamp: data.checkOutTime || null,
+          itemID: data.itemID || null
+        };
       });
 
       setCheckedOutItems(items);
-
-      // Calculate overdue items
-      const todayCutoff = new Date();
-      todayCutoff.setHours(17, 0, 0, 0); // 5:00 PM cutoff
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-
-      const overdue = items.filter(item => {
-        if (!item.timestamp || item.timestamp === "No date available") return false;
-        const checkoutTime = new Date(item.timestamp);
-        const isPreviousDayCheckout = checkoutTime < todayStart;
-        const isPastCutoffToday = new Date() > todayCutoff && checkoutTime < todayCutoff;
-        return isPreviousDayCheckout || isPastCutoffToday;
-      });
-
-      setOverdueItems(overdue);
+      setOverdueItems(items.filter(isItemOverdue));
       setLoading(false);
     }, (error) => {
+      console.error("Error fetching data:", error);
       setLoading(false);
     });
 
@@ -126,164 +121,15 @@ export default function Home() {
     }
 
     const periodItems = checkedOutItems.filter(item => {
-      if (!item.timestamp) return false;
-      let checkoutTime;
-      if (typeof item.timestamp.toDate === 'function') {
-        checkoutTime = item.timestamp.toDate();
-      } else {
-        checkoutTime = new Date(item.timestamp);
-      }
-      return checkoutTime >= startDate;
-    });
-
-    const overdueInPeriod = periodItems.filter(item => {
-      if (!item.timestamp) return false;
-      let checkoutTime;
-      if (typeof item.timestamp.toDate === 'function') {
-        checkoutTime = item.timestamp.toDate();
-      } else {
-        checkoutTime = new Date(item.timestamp);
-      }
-      const todayStart = new Date(currentTime);
-      todayStart.setHours(0, 0, 0, 0);
-      const isPreviousDayCheckout = checkoutTime < todayStart;
-      const todayCutoff = new Date(todayStart);
-      todayCutoff.setHours(17, 0, 0, 0);
-      const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-      return isPreviousDayCheckout || isPastCutoffToday;
+      const checkoutTime = toDate(item.timestamp);
+      return checkoutTime && checkoutTime >= startDate;
     });
 
     return {
       items: periodItems,
       total: periodItems.length,
-      overdue: overdueInPeriod.length
+      overdue: periodItems.filter(isItemOverdue).length
     };
-  };
-
-  // Helper function to check if an item is overdue
-  const isItemOverdue = (item) => {
-    if (!item.timestamp) return false;
-    
-    const todayCutoff = new Date();
-    todayCutoff.setHours(17, 0, 0, 0);
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
-    let checkoutTime;
-    if (typeof item.timestamp.toDate === 'function') {
-      checkoutTime = item.timestamp.toDate();
-    } else {
-      checkoutTime = new Date(item.timestamp);
-    }
-
-    const isPreviousDayCheckout = checkoutTime < todayStart;
-    const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-    return isPreviousDayCheckout || isPastCutoffToday;
-  };
-
-  // Send weekly overdue report
-  const sendOverdueReport = async (email) => {
-    if (!email) return;
-    
-    setSendingEmail(true);
-    setEmailError(null);
-    
-    try {
-      // Calculate the date 7 days ago
-      const oneWeekAgo = new Date();
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      
-      // Filter items that are overdue AND were checked out in the past week
-      const weeklyOverdueItems = overdueItems.filter(item => {
-        if (!item.timestamp) return false;
-        let checkoutTime;
-        if (typeof item.timestamp.toDate === 'function') {
-          checkoutTime = item.timestamp.toDate();
-        } else {
-          checkoutTime = new Date(item.timestamp);
-        }
-        return checkoutTime >= oneWeekAgo;
-      });
-
-      const templateParams = {
-        to_email: email,
-        report_title: 'Weekly Overdue Items Report',
-        date: new Date().toLocaleDateString(),
-        count: weeklyOverdueItems.length,
-        items: weeklyOverdueItems.map(item => ({
-          name: item.name || "Unknown item",
-          user: item.usersName || "Unknown user",
-          time: formatDateTime(item.timestamp)
-        }))
-      };
-
-      await emailjs.send(
-        process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
-        process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
-        templateParams
-      );
-      setEmailSent(true);
-    } catch (error) {
-      console.error('EmailJS Error:', error);
-      setEmailError('Failed to send email. Please try again.');
-    } finally {
-      setSendingEmail(false);
-      setTimeout(() => setEmailSent(false), 3000);
-    }
-  };
-
-  const handleSendEmail = async (e) => {
-    e.preventDefault();
-    const email = emailRef.current.value;
-    if (!email) return;
-
-    if (activeTab === 'overdue') {
-      await sendOverdueReport(email);
-    } else {
-      // Full report for other tabs
-      setSendingEmail(true);
-      setEmailError(null);
-      
-      try {
-        const reportData = getReportData();
-        const reportTitle = getReportTitle();
-        
-        const templateParams = {
-          to_email: email,
-          report_title: reportTitle,
-          date: new Date().toLocaleDateString(),
-          total_items: reportData.total || 0,
-          overdue_items: reportData.overdue || 0,
-          overdue_rate: `${reportData.total ? Math.round((reportData.overdue / reportData.total) * 100) : 0}%`,
-          
-          // PRE-GENERATE THE ITEMS TABLE HTML
-          items_html: reportData.items.map(item => `
-            <tr>
-              <td>${item.name || "Unknown"}</td>
-              <td>${item.user || "Unknown"}</td>
-              <td>${formatDateTime(item.timestamp) || "N/A"}</td>
-              <td style="${isItemOverdue(item) ? 'color: red; font-weight: bold;' : 'color: green;'}">
-                ${isItemOverdue(item) ? "⚠️ Overdue" : "✓ Active"}
-              </td>
-            </tr>
-          `).join('') // Combine all rows into a single string
-        };
-        
-        await emailjs.send(
-          process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
-          process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
-          templateParams
-        );
-        
-        setEmailSent(true);
-      } catch (error) {
-        console.error('EmailJS Error:', error);
-        setEmailError('Failed to send email. Please try again.');
-      } finally {
-        setSendingEmail(false);
-        setTimeout(() => setEmailSent(false), 3000);
-      }
-    }
   };
 
   const getReportTitle = () => {
@@ -295,8 +141,157 @@ export default function Home() {
     }
   };
 
+  const sendWeeklyOverdueReport = async (email) => {
+    if (!email) return;
+    
+    setSendingEmail(true);
+    setEmailError(null);
+    
+    try {
+      // Calculate the date 7 days ago
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      
+      // Filter items that are overdue AND were checked out in the past week
+      const weeklyOverdueItems = checkedOutItems.filter(item => {
+        const checkoutTime = toDate(item.timestamp);
+        if (!checkoutTime) return false;
+        
+        const isOverdue = isItemOverdue(item);
+        const isWithinLastWeek = checkoutTime >= oneWeekAgo;
+        
+        return isOverdue && isWithinLastWeek;
+      });
+
+      const templateParams = {
+        to_email: email,
+        report_title: 'Weekly Overdue Items Report',
+        date: new Date().toLocaleDateString(),
+        total_items: weeklyOverdueItems.length,
+        overdue_items: weeklyOverdueItems.length, // All items in this report are overdue
+        overdue_rate: '100%', // Since this is an overdue-only report
+        items_html: weeklyOverdueItems.map(item => `
+          <tr>
+            <td>${item.name || "Unknown"}</td>
+            <td>${item.usersName || "Unknown"}</td>
+            <td>${formatDateTime(item.timestamp)}</td>
+            <td style="color: red; font-weight: bold;">
+              ⚠️ Overdue
+            </td>
+          </tr>
+        `).join('')
+      };
+      
+      await emailjs.send(
+        process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
+        process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
+        templateParams
+      );
+      
+      setEmailSent(true);
+    } catch (error) {
+      console.error('EmailJS Error:', error);
+      setEmailError('Failed to send email. Please try again.');
+    } finally {
+      setSendingEmail(false);
+      setTimeout(() => setEmailSent(false), 3000);
+    }
+  };
+  const sendEmailReport = async (email, items, title, isOverdueReport = false) => {
+    setSendingEmail(true);
+    setEmailError(null);
+  
+    try {
+      const templateParams = {
+        to_email: email,
+        report_title: title,
+        date: new Date().toLocaleDateString(),
+        total_items: items.length,
+        overdue_items: isOverdueReport ? items.length : items.filter(isItemOverdue).length,
+        overdue_rate: isOverdueReport 
+          ? '100%' 
+          : `${items.length ? Math.round((items.filter(isItemOverdue).length / items.length) * 100) : 0}%`,
+          items_html: items.map(item => `
+            <tr>
+              <td>${item.name || "Unknown"}</td>
+              <td>${item.usersName || "Unknown"}</td>
+              <td>${formatDateTime(item.timestamp)}</td>
+              <td>
+                <a href="${item.itemID ? item.itemID : '#'}" 
+ 
+                   target="_blank" 
+                   style="color: blue; text-decoration: underline;">
+                  View Item
+                </a>
+              </td>
+              <td style="${isOverdueReport || isItemOverdue(item) ? 'color: red; font-weight: bold;' : 'color: green;'}">
+                ${isOverdueReport || isItemOverdue(item) ? "⚠️ Overdue" : "✓ Active"}
+              </td>
+            </tr>
+          `).join('')
+          
+      };
+  
+      await emailjs.send(
+        process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
+        process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
+        templateParams
+      );
+  
+      setEmailSent(true);
+    } catch (error) {
+      console.error('EmailJS Error:', error);
+      setEmailError('Failed to send email. Please try again.');
+    } finally {
+      setSendingEmail(false);
+      setTimeout(() => setEmailSent(false), 3000);
+    }
+  };
+  
+  const handleSendEmail = async (e) => {
+    e.preventDefault();
+    const email = emailRef.current.value;
+    if (!email) return;
+  
+    if (activeTab === 'overdue') {
+      // Strictly filter only overdue items that were checked out in the last 7 days
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+  
+      const weeklyOverdueItems = checkedOutItems.filter(item => {
+        const checkoutTime = toDate(item.timestamp);
+        return checkoutTime && checkoutTime >= oneWeekAgo && isItemOverdue(item); // ✅ Properly filter overdue items
+      });
+  
+      await sendEmailReport(
+        email, 
+        weeklyOverdueItems, 
+        'Weekly Overdue Items Report', true
+      );
+    } else if (activeTab === 'reports') {
+      // Filter out only overdue items for reports
+      const overdueItemsOnly = getReportData().items.filter(isItemOverdue);
+  
+      await sendEmailReport(
+        email, 
+        overdueItemsOnly,  
+        getReportTitle()
+      );
+    } else {
+      // Filter only overdue items for checked-out tab
+      const overdueCheckedOutItems = checkedOutItems.filter(isItemOverdue);
+  
+      await sendEmailReport(
+        email, 
+        overdueCheckedOutItems, 
+        'All Overdue Items'
+      );
+    }
+  };
+    
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      {/* Header Section */}
       <header className="bg-white dark:bg-gray-800 shadow">
         <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 flex justify-between items-center">
           <Image
@@ -325,6 +320,7 @@ export default function Home() {
         </div>
       </header>
 
+      {/* Main Content */}
       <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         {loading && (
           <div className="flex justify-center py-6">
@@ -334,6 +330,7 @@ export default function Home() {
 
         {!loading && (
           <>
+            {/* Tabs Navigation */}
             <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
               <nav className="-mb-px flex space-x-8" aria-label="Tabs">
                 <button
@@ -376,6 +373,7 @@ export default function Home() {
                   <div className="py-2 align-middle inline-block min-w-full sm:px-6 lg:px-8">
                     <div className="shadow overflow-hidden border-b border-gray-200 dark:border-gray-700 sm:rounded-lg">
                       <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                        {/* Table Headers */}
                         <thead className="bg-gray-50 dark:bg-gray-800">
                           <tr>
                             <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
@@ -392,23 +390,10 @@ export default function Home() {
                             </th>
                           </tr>
                         </thead>
+                        {/* Table Body */}
                         <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                           {(activeTab === 'checked-out' ? checkedOutItems : overdueItems).map((item) => {
-                            const todayCutoff = new Date();
-                            todayCutoff.setHours(17, 0, 0, 0);
-                            const todayStart = new Date();
-                            todayStart.setHours(0, 0, 0, 0);
-
-                            let checkoutTime;
-                            if (item.timestamp && typeof item.timestamp.toDate === 'function') {
-                              checkoutTime = item.timestamp.toDate();
-                            } else if (item.timestamp) {
-                              checkoutTime = new Date(item.timestamp);
-                            }
-
-                            const isPreviousDayCheckout = checkoutTime < todayStart;
-                            const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-                            const isOverdue = isPreviousDayCheckout || isPastCutoffToday;
+                            const isOverdue = isItemOverdue(item);
                             
                             return (
                               <tr key={item.id}>
@@ -443,6 +428,7 @@ export default function Home() {
               </div>
             )}
 
+            {/* Reports Tab */}
             {activeTab === 'reports' && (
               <div className="flex flex-col">
                 <div className="mb-6">
@@ -483,6 +469,7 @@ export default function Home() {
                   </div>
                 </div>
 
+                {/* Report Summary */}
                 <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mb-6">
                   <h2 className="text-lg font-medium text-gray-900 dark:text-white mb-4">{getReportTitle()}</h2>
                   
@@ -503,6 +490,7 @@ export default function Home() {
                     </div>
                   </div>
 
+                  {/* Email Form */}
                   <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
                     <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-4">Send Report via Email</h3>
                     <form onSubmit={handleSendEmail} className="flex flex-col sm:flex-row gap-3">
@@ -532,6 +520,7 @@ export default function Home() {
                   </div>
                 </div>
 
+                {/* Detailed Report Table */}
                 {getReportData().items.length > 0 && (
                   <div className="-my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
                     <div className="py-2 align-middle inline-block min-w-full sm:px-6 lg:px-8">
@@ -555,22 +544,7 @@ export default function Home() {
                           </thead>
                           <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                             {getReportData().items.map((item) => {
-                              let checkoutTime;
-                              if (item.timestamp && typeof item.timestamp.toDate === 'function') {
-                                checkoutTime = item.timestamp.toDate();
-                              } else if (item.timestamp) {
-                                checkoutTime = new Date(item.timestamp);
-                              }
-
-                              const todayStart = new Date(currentTime);
-                              todayStart.setHours(0, 0, 0, 0);
-                              const isPreviousDayCheckout = checkoutTime < todayStart;
-                              
-                              const todayCutoff = new Date(todayStart);
-                              todayCutoff.setHours(17, 0, 0, 0);
-                              const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-
-                              const isOverdue = isPreviousDayCheckout || isPastCutoffToday;
+                              const isOverdue = isItemOverdue(item);
                               
                               return (
                                 <tr key={item.id}>
@@ -606,6 +580,7 @@ export default function Home() {
               </div>
             )}
 
+            {/* Empty State */}
             {(activeTab === 'checked-out' && checkedOutItems.length === 0) || 
              (activeTab === 'overdue' && overdueItems.length === 0) ? (
               <div className="text-center py-12">
@@ -622,6 +597,7 @@ export default function Home() {
         )}
       </main>
 
+      {/* Footer */}
       <footer className="bg-white dark:bg-gray-800 shadow">
         <div className="max-w-7xl mx-auto py-4 px-4 sm:px-6 lg:px-8">
           <p className="text-center text-sm text-gray-500 dark:text-gray-400">
