@@ -254,41 +254,44 @@ export default function Home() {
     if (!email) return;
   
     if (activeTab === 'overdue') {
-      // Strictly filter only overdue items that were checked out in the last 7 days
       const oneWeekAgo = new Date();
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
   
       const weeklyOverdueItems = checkedOutItems.filter(item => {
         const checkoutTime = toDate(item.timestamp);
-        return checkoutTime && checkoutTime >= oneWeekAgo && isItemOverdue(item); // ✅ Properly filter overdue items
+        return checkoutTime && checkoutTime >= oneWeekAgo && isItemOverdue(item);
       });
   
       await sendEmailReport(
-        email, 
-        weeklyOverdueItems, 
-        'Weekly Overdue Items Report', true
+        email,
+        weeklyOverdueItems,
+        'Weekly Overdue Report', // Changed to match your request
+        true
       );
     } else if (activeTab === 'reports') {
-      // Filter out only overdue items for reports
-      const overdueItemsOnly = getReportData().items.filter(isItemOverdue);
+      const reportData = getReportData();
+      const overdueItemsOnly = reportData.items.filter(isItemOverdue);
+      const title = reportPeriod === 'daily' 
+        ? 'Daily Overdue Report' 
+        : reportPeriod === 'weekly' 
+          ? 'Weekly Overdue Report' 
+          : 'Monthly Overdue Report';
   
       await sendEmailReport(
-        email, 
-        overdueItemsOnly,  
-        getReportTitle()
+        email,
+        overdueItemsOnly,
+        title
       );
     } else {
-      // Filter only overdue items for checked-out tab
       const overdueCheckedOutItems = checkedOutItems.filter(isItemOverdue);
   
       await sendEmailReport(
-        email, 
-        overdueCheckedOutItems, 
-        'All Overdue Items'
+        email,
+        overdueCheckedOutItems,
+        'All Overdue Items' // This could stay as is or be adjusted based on your preference
       );
     }
-  };
-    
+  };    
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Header Section */}
