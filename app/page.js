@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Image from "next/image";
 import { db } from '../firebase';
-import { collection, query, onSnapshot } from 'firebase/firestore';
+import { collection, query, onSnapshot, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import emailjs from '@emailjs/browser';
 
 export default function Home() {
@@ -52,20 +52,22 @@ export default function Home() {
 
   // Check if item is overdue
   const isItemOverdue = (item) => {
+    if (item.manualOverdue === true) return true;
+    if (item.manualOverride === true) return false;
+
     const checkoutTime = toDate(item.timestamp);
-    if (!checkoutTime) return false;  // If no valid time, it's not overdue
-  
+    if (!checkoutTime) return false;
+
     const todayCutoff = new Date();
     todayCutoff.setHours(17, 0, 0, 0); // 5:00 PM cutoff
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-  
+
     const isPreviousDayCheckout = checkoutTime < todayStart;
     const isPastCutoffToday = currentTime > todayCutoff && checkoutTime < todayCutoff;
-    
+
     return isPreviousDayCheckout || isPastCutoffToday;
   };
-  
 
   // Fetch data from Firestore
   useEffect(() => {
@@ -73,14 +75,16 @@ export default function Home() {
     
     const q = query(collection(db, "CheckedOutItems"));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const items = querySnapshot.docs.map(doc => {
-        const data = doc.data();
+      const items = querySnapshot.docs.map(docSnap => {
+        const data = docSnap.data();
         return { 
-          id: doc.id, 
+          id: docSnap.id, 
           name: data.name || "Unknown", 
           usersName: data.usersName || "Unknown", 
           timestamp: data.checkOutTime || null,
-          itemID: data.itemID || null
+          itemID: data.itemID || null,
+          manualOverride: data.manualOverride || false,
+          manualOverdue: data.manualOverdue || false
         };
       });
 
@@ -141,62 +145,6 @@ export default function Home() {
     }
   };
 
-  const sendWeeklyOverdueReport = async (email) => {
-    if (!email) return;
-    
-    setSendingEmail(true);
-    setEmailError(null);
-    
-    try {
-      // Calculate the date 7 days ago
-      const oneWeekAgo = new Date();
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      
-      // Filter items that are overdue AND were checked out in the past week
-      const weeklyOverdueItems = checkedOutItems.filter(item => {
-        const checkoutTime = toDate(item.timestamp);
-        if (!checkoutTime) return false;
-        
-        const isOverdue = isItemOverdue(item);
-        const isWithinLastWeek = checkoutTime >= oneWeekAgo;
-        
-        return isOverdue && isWithinLastWeek;
-      });
-
-      const templateParams = {
-        to_email: email,
-        report_title: 'Weekly Overdue Items Report',
-        date: new Date().toLocaleDateString(),
-        total_items: weeklyOverdueItems.length,
-        overdue_items: weeklyOverdueItems.length, // All items in this report are overdue
-        overdue_rate: '100%', // Since this is an overdue-only report
-        items_html: weeklyOverdueItems.map(item => `
-          <tr>
-            <td>${item.name || "Unknown"}</td>
-            <td>${item.usersName || "Unknown"}</td>
-            <td>${formatDateTime(item.timestamp)}</td>
-            <td style="color: red; font-weight: bold;">
-              ⚠️ Overdue
-            </td>
-          </tr>
-        `).join('')
-      };
-      
-      await emailjs.send(
-        process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID,
-        process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID,
-        templateParams
-      );
-      
-      setEmailSent(true);
-    } catch (error) {
-      console.error('EmailJS Error:', error);
-      setEmailError('Failed to send email. Please try again.');
-    } finally {
-      setSendingEmail(false);
-      setTimeout(() => setEmailSent(false), 3000);
-    }
-  };
   const sendEmailReport = async (email, items, title, isOverdueReport = false) => {
     setSendingEmail(true);
     setEmailError(null);
@@ -218,7 +166,6 @@ export default function Home() {
               <td>${formatDateTime(item.timestamp)}</td>
               <td>
                 <a href="${item.itemID ? item.itemID : '#'}" 
- 
                    target="_blank" 
                    style="color: blue; text-decoration: underline;">
                   View Item
@@ -265,7 +212,7 @@ export default function Home() {
       await sendEmailReport(
         email,
         weeklyOverdueItems,
-        'Weekly Overdue Report', // Changed to match your request
+        'Weekly Overdue Report',
         true
       );
     } else if (activeTab === 'reports') {
@@ -288,10 +235,47 @@ export default function Home() {
       await sendEmailReport(
         email,
         overdueCheckedOutItems,
-        'All Overdue Items' // This could stay as is or be adjusted based on your preference
+        'All Overdue Items'
       );
     }
   };    
+
+  // New function to check in an item (remove it from the database)
+  const handleCheckIn = async (itemId) => {
+    try {
+      await deleteDoc(doc(db, "CheckedOutItems", itemId));
+      console.log(`Item ${itemId} checked in successfully.`);
+    } catch (error) {
+      console.error("Error checking in item:", error);
+    }
+  };
+
+  // New function to mark an overdue item as active manually
+  const handleMarkAsActive = async (itemId) => {
+    try {
+      await updateDoc(doc(db, "CheckedOutItems", itemId), { 
+        manualOverride: true,
+        manualOverdue: false
+      });
+      console.log(`Item ${itemId} marked as active.`);
+    } catch (error) {
+      console.error("Error marking item as active:", error);
+    }
+  };
+
+  // New function to manually mark an item as overdue
+  const handleMarkAsOverdue = async (itemId) => {
+    try {
+      await updateDoc(doc(db, "CheckedOutItems", itemId), { 
+        manualOverdue: true,
+        manualOverride: false
+      });
+      console.log(`Item ${itemId} marked as overdue.`);
+    } catch (error) {
+      console.error("Error marking item as overdue:", error);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Header Section */}
@@ -391,6 +375,11 @@ export default function Home() {
                             <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                               Status
                             </th>
+                            {(activeTab === 'checked-out' || activeTab === 'overdue') && (
+                              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                                Action
+                              </th>
+                            )}
                           </tr>
                         </thead>
                         {/* Table Body */}
@@ -420,6 +409,32 @@ export default function Home() {
                                     </span>
                                   )}
                                 </td>
+                                {(activeTab === 'checked-out' || activeTab === 'overdue') && (
+                                  <td className="px-6 py-4 whitespace-nowrap space-x-2">
+                                    <button
+                                      onClick={() => handleCheckIn(item.id)}
+                                      className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded"
+                                    >
+                                      Check In
+                                    </button>
+                                    {activeTab === 'checked-out' && !isOverdue && (
+                                      <button
+                                        onClick={() => handleMarkAsOverdue(item.id)}
+                                        className="px-3 py-1 bg-orange-500 hover:bg-orange-600 text-white text-xs rounded"
+                                      >
+                                        Mark as Overdue
+                                      </button>
+                                    )}
+                                    {activeTab === 'overdue' && isOverdue && (
+                                      <button
+                                        onClick={() => handleMarkAsActive(item.id)}
+                                        className="px-3 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded"
+                                      >
+                                        Mark as Active
+                                      </button>
+                                    )}
+                                  </td>
+                                )}
                               </tr>
                             );
                           })}
